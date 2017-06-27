@@ -236,19 +236,11 @@ impl RtmClient {
 
             // blocks until a message is received, websocket errors, or a read timeout occurs
             let message = match websocket.read_message() {
-                Err(Io(x)) => {
-                    // Allow WouldBlock errors to keep the show moving
-                    if x.kind() == WouldBlock {
-                        continue;
-                    }
-
-                    debug!("{:?}", Io(x));
-                    // read failed, try send ping to check still alive
-                    websocket.write_message(tungstenite::Message::Ping(vec![]))?;
-                    continue;
+                // Allow WouldBlock errors to keep the show moving
+                Err(Io(ref x)) if x.kind() == WouldBlock => {
+                    continue
                 }
 
-                // Any other socket error not acceptable
                 Err(e) => {
                     debug!("{:?}", e);
                     // read failed, try send ping to check still alive
