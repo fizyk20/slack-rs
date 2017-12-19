@@ -18,19 +18,19 @@
 //! See [CHANGELOG.md](https://github.com/slack-rs/slack-rs/blob/master/CHANGELOG.md) for latest
 //! release notes.
 
+#[macro_use]
+extern crate log;
 extern crate reqwest;
-pub extern crate slack_api as api;
 #[macro_use]
 extern crate serde_derive;
 extern crate serde_json;
 extern crate tungstenite;
-#[macro_use]
-extern crate log;
+pub extern crate slack_api as api;
 
 pub mod error;
 pub use error::Error;
 
-pub use api::{Channel, Group, Im, Team, User, Message};
+pub use api::{Channel, Group, Im, Message, Team, User};
 
 mod events;
 pub use events::Event;
@@ -38,7 +38,8 @@ pub use events::Event;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, channel};
-use events::{MessageSent, MessageError};
+use events::{MessageError, MessageSent};
+use std::thread;
 
 /// Implement this trait in your code to handle message events
 pub trait EventHandler {
@@ -58,6 +59,7 @@ pub trait EventHandler {
 enum WsMessage {
     Close,
     Text(String),
+    Received(tungstenite::Message),
 }
 
 /// The actual messaging client.
@@ -107,10 +109,12 @@ impl Sender {
     pub fn send_message(&self, channel_id: &str, msg: &str) -> Result<usize, Error> {
         let n = self.get_msg_uid();
         let msg_json = serde_json::to_string(&msg)?;
-        let mstr = format!(r#"{{"id": {},"type": "message", "channel": "{}","text": "{}"}}"#,
-                           n,
-                           channel_id,
-                           &msg_json[1..msg_json.len() - 1]);
+        let mstr = format!(
+            r#"{{"id": {},"type": "message", "channel": "{}","text": "{}"}}"#,
+            n,
+            channel_id,
+            &msg_json[1..msg_json.len() - 1]
+        );
 
         self.send(&mstr[..])
             .map_err(|err| Error::Internal(format!("{}", err)))?;
@@ -127,9 +131,10 @@ impl Sender {
     /// `channel_id` is the slack channel id, e.g. `UXYZ1234`, not `#general`.
     pub fn send_typing(&self, channel_id: &str) -> Result<usize, Error> {
         let n = self.get_msg_uid();
-        let mstr = format!(r#"{{"id": {}, "type": "typing", "channel": "{}"}}"#,
-                           n,
-                           channel_id);
+        let mstr = format!(
+            r#"{{"id": {}, "type": "typing", "channel": "{}"}}"#,
+            n, channel_id
+        );
 
         self.send(&mstr)
             .map_err(|err| Error::Internal(format!("{:?}", err)))?;
@@ -159,10 +164,10 @@ impl RtmClient {
         };
 
         Ok(RtmClient {
-               start_response: start_response,
-               sender: sender,
-               rx: rx,
-           })
+            start_response: start_response,
+            sender: sender,
+            rx: rx,
+        })
     }
 
     /// Runs the message receive loop
@@ -173,60 +178,66 @@ impl RtmClient {
             .ok_or(Error::Api("Slack did not provide a URL".into()))?;
 
         let wss_url = reqwest::Url::parse(&start_url)?;
-        let mut websocket = tungstenite::connect(wss_url)?;
+        let mut websocket = tungstenite::connect(wss_url.clone())?;
+        let mut ws = tungstenite::connect(wss_url)?;
 
         // Slack can leave us hanging
         {
             let socket = match *websocket.get_mut() {
                 tungstenite::stream::Stream::Plain(ref s) => s,
-                tungstenite::stream::Stream::Tls(ref mut t) => t.get_mut()
+                tungstenite::stream::Stream::Tls(ref mut t) => t.get_mut(),
+            };
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(70)))?;
+            socket.set_write_timeout(Some(std::time::Duration::from_secs(70)))?;
+            let socket = match *ws.get_mut() {
+                tungstenite::stream::Stream::Plain(ref s) => s,
+                tungstenite::stream::Stream::Tls(ref mut t) => t.get_mut(),
             };
             socket.set_read_timeout(Some(std::time::Duration::from_secs(70)))?;
             socket.set_write_timeout(Some(std::time::Duration::from_secs(70)))?;
         }
 
         handler.on_connect(self);
+        let ws_sender = self.sender.tx.clone();
+        let _ = thread::spawn(move || {
+            loop {
+                // blocks until a message is received or websocket errors
+                if let Ok(message) = ws.read_message() {
+                    let _ = ws_sender.send(WsMessage::Received(message));
+                }
+            }
+        });
+
         // receive loop
         loop {
             // try to write out pending messages (if any)
-            loop {
-                match self.rx.try_recv() {
-                    Ok(msg) => {
-                        match msg {
-                            WsMessage::Text(text) => {
-                                websocket
-                                    .write_message(tungstenite::Message::Text(text))?
-                            }
-                            WsMessage::Close => {
-                                handler.on_close(self);
-                                return websocket.close(None).map_err(|e| e.into());
-                            }
-                        }
+            match self.rx.recv() {
+                Ok(msg) => match msg {
+                    WsMessage::Text(text) => {
+                        websocket.write_message(tungstenite::Message::Text(text))?
                     }
-                    Err(mpsc::TryRecvError::Disconnected) => {
+                    WsMessage::Close => {
                         handler.on_close(self);
-                        return Err(Error::Internal("rx disconnected".into()));
+                        return websocket.close(None).map_err(|e| e.into());
                     }
-                    Err(mpsc::TryRecvError::Empty) => break,
+                    WsMessage::Received(message) => match message {
+                        // handle the message
+                        tungstenite::Message::Text(text) => match Event::from_json(&text[..]) {
+                            Ok(event) => handler.on_event(self, event),
+                            Err(err) => {
+                                info!(
+                                    "Unable to deserialize slack message, error: {}: json: {}",
+                                    err, text
+                                );
+                            }
+                        },
+                        tungstenite::Message::Binary(_) => {}
+                    },
+                },
+                Err(_) => {
+                    handler.on_close(self);
+                    return Err(Error::Internal("rx disconnected".into()));
                 }
-            }
-
-            // blocks until a message is received or websocket errors
-            let message = websocket.read_message()?;
-
-            // handle the message
-            match message {
-                tungstenite::Message::Text(text) => {
-                    match Event::from_json(&text[..]) {
-                        Ok(event) => handler.on_event(self, event),
-                        Err(err) => {
-                            info!("Unable to deserialize slack message, error: {}: json: {}",
-                                  err,
-                                  text);
-                        }
-                    }
-                }
-                tungstenite::Message::Binary(_) => {}
             }
         }
     }

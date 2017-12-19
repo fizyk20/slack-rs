@@ -104,8 +104,7 @@ impl error::Error for Error {
             Error::Utf8(ref e) => e.description(),
             Error::Url(ref e) => e.description(),
             Error::Json(ref e) => e.description(),
-            Error::Api(ref st) |
-            Error::Internal(ref st) => st,
+            Error::Api(ref st) | Error::Internal(ref st) => st,
         }
     }
 
@@ -116,8 +115,7 @@ impl error::Error for Error {
             Error::Utf8(ref e) => Some(e),
             Error::Url(ref e) => Some(e),
             Error::Json(ref e) => Some(e),
-            Error::Api(_) |
-            Error::Internal(_) => None,
+            Error::Api(_) | Error::Internal(_) => None,
         }
     }
 }

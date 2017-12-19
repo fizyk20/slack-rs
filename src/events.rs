@@ -14,8 +14,8 @@
 // limitations under the License.
 //
 
-use api::{Bot, Message, File, FileComment, Channel, User, MessageUnpinnedItem, MessagePinnedItem,
-          stars, reactions};
+use api::{reactions, stars, Bot, Channel, File, FileComment, Message, MessagePinnedItem,
+          MessageUnpinnedItem, User};
 use std::boxed::Box;
 
 /// Represents Slack [rtm event](https://api.slack.com/rtm) types.
@@ -263,19 +263,15 @@ pub enum Event {
     MessageError(MessageError),
     /// Represents a request to display a desktop notification
     DesktopNotification {
-        #[serde(rename = "avatarImage")]
-        avatar_image: Option<String>,
+        #[serde(rename = "avatarImage")] avatar_image: Option<String>,
         channel: Option<String>,
         content: Option<String>,
         event_ts: Option<String>,
-        #[serde(rename = "imageUri")]
-        image_uri: Option<String>,
+        #[serde(rename = "imageUri")] image_uri: Option<String>,
         is_shared: Option<bool>,
-        #[serde(rename = "launchUri")]
-        launch_uri: Option<String>,
+        #[serde(rename = "launchUri")] launch_uri: Option<String>,
         msg: Option<String>,
-        #[serde(rename = "ssbFilename")]
-        ssb_filename: Option<String>,
+        #[serde(rename = "ssbFilename")] ssb_filename: Option<String>,
         subtitle: Option<String>,
         thread_ts: Option<String>,
         title: Option<String>,
@@ -313,45 +309,47 @@ mod tests {
 
     #[test]
     fn decode_short_standard_message() {
-        let event: Event = Event::from_json(r#"{
+        let event: Event = Event::from_json(
+            r#"{
             "type": "message",
             "ts": "1234567890.218332",
             "user": "U12345678",
             "text": "Hello world",
             "channel": "C12345678"
-        }"#)
-                .unwrap();
+        }"#,
+        ).unwrap();
         match event {
-            Event::Message(message) => {
-                match *message {
-                    Message::Standard(MessageStandard {
-                                          ref ts,
-                                          ref user,
-                                          ref text,
-                                          ..
-                                      }) => {
-                        assert_eq!(ts.as_ref().unwrap(), "1234567890.218332");
-                        assert_eq!(text.as_ref().unwrap(), "Hello world");
-                        assert_eq!(user.as_ref().unwrap(), "U12345678");
-                    }
-                    _ => panic!("Message decoded into incorrect variant."),
+            Event::Message(message) => match *message {
+                Message::Standard(MessageStandard {
+                    ref ts,
+                    ref user,
+                    ref text,
+                    ..
+                }) => {
+                    assert_eq!(ts.as_ref().unwrap(), "1234567890.218332");
+                    assert_eq!(text.as_ref().unwrap(), "Hello world");
+                    assert_eq!(user.as_ref().unwrap(), "U12345678");
                 }
-            }
+                _ => panic!("Message decoded into incorrect variant."),
+            },
             _ => panic!("Event decoded into incorrect variant."),
         }
     }
 
     #[test]
     fn decode_sent_ok() {
-        let event: Event = Event::from_json(r#"{
+        let event: Event = Event::from_json(
+            r#"{
             "ok": true,
             "reply_to": 1,
             "ts": "1234567890.218332",
             "text": "Hello world"
-        }"#)
-                .unwrap();
+        }"#,
+        ).unwrap();
         match event {
-            Event::MessageSent(MessageSent { reply_to, ts, text, .. }) => {
+            Event::MessageSent(MessageSent {
+                reply_to, ts, text, ..
+            }) => {
                 assert_eq!(reply_to, 1);
                 assert_eq!(ts, "1234567890.218332");
                 assert_eq!(text, "Hello world");
@@ -362,21 +360,22 @@ mod tests {
 
     #[test]
     fn decode_sent_not_ok() {
-        let event: Event = Event::from_json(r#"{
+        let event: Event = Event::from_json(
+            r#"{
             "ok": false,
             "reply_to": 1,
             "error": {
                 "code": 2,
                 "msg": "message text is missing"
             }
-        }"#)
-                .unwrap();
+        }"#,
+        ).unwrap();
         match event {
             Event::MessageError(MessageError {
-                                    reply_to,
-                                    error: MessageErrorDetail { code, msg, .. },
-                                    ..
-                                }) => {
+                reply_to,
+                error: MessageErrorDetail { code, msg, .. },
+                ..
+            }) => {
                 assert_eq!(reply_to, 1);
                 assert_eq!(code, 2);
                 assert_eq!(msg, "message text is missing");
@@ -387,7 +386,8 @@ mod tests {
 
     #[test]
     fn decode_extended_standard_message() {
-        let event: Event = Event::from_json(r##"{
+        let event: Event = Event::from_json(
+            r##"{
             "type": "message",
             "ts": "1234567890.218332",
             "user": "U12345678",
@@ -427,17 +427,15 @@ mod tests {
                     "thumb_url": "http://example.com/path/to/thumb.png"
                 }
             ]
-        }"##)
-                .unwrap();
+        }"##,
+        ).unwrap();
         match event {
-            Event::Message(message) => {
-                match *message {
-                    Message::Standard(MessageStandard { attachments, .. }) => {
-                        assert_eq!(attachments.unwrap()[0].color.as_ref().unwrap(), "#36a64f");
-                    }
-                    _ => panic!("Message decoded into incorrect variant."),
+            Event::Message(message) => match *message {
+                Message::Standard(MessageStandard { attachments, .. }) => {
+                    assert_eq!(attachments.unwrap()[0].color.as_ref().unwrap(), "#36a64f");
                 }
-            }
+                _ => panic!("Message decoded into incorrect variant."),
+            },
             _ => panic!("Event decoded into incorrect variant."),
         }
     }
