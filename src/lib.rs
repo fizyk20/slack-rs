@@ -34,9 +34,12 @@ mod events;
 pub use crate::events::Event;
 
 use crate::events::{MessageError, MessageSent};
+
+use std::io::ErrorKind::WouldBlock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use tungstenite::Error::Io;
 
 /// Implement this trait in your code to handle message events
 pub trait EventHandler {
@@ -200,7 +203,8 @@ impl RtmClient {
                 tungstenite::stream::Stream::Plain(ref s) => s,
                 tungstenite::stream::Stream::Tls(ref mut t) => t.get_mut(),
             };
-            socket.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+            // Set the read timeout to something small to prevent blocking reads
+            socket.set_read_timeout(Some(std::time::Duration::from_secs(1)))?;
             socket.set_write_timeout(Some(std::time::Duration::from_secs(25)))?;
         }
 
@@ -230,8 +234,21 @@ impl RtmClient {
                 }
             }
 
-            // blocks until a message is received or websocket errors
+            // blocks until a message is received, websocket errors, or a read timeout occurs
             let message = match websocket.read_message() {
+                Err(Io(x)) => {
+                    // Allow WouldBlock errors to keep the show moving
+                    if x.kind() == WouldBlock {
+                        continue;
+                    }
+
+                    debug!("{:?}", Io(x));
+                    // read failed, try send ping to check still alive
+                    websocket.write_message(tungstenite::Message::Ping(vec![]))?;
+                    continue;
+                }
+
+                // Any other socket error not acceptable
                 Err(e) => {
                     debug!("{:?}", e);
                     // read failed, try send ping to check still alive
